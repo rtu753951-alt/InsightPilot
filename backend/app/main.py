@@ -20,6 +20,9 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         # 讀取環境變數中的額外 Origins (適合部署用)
+        
+        # 加這行
+        "https://insight-pilot-omega.vercel.app",
         *settings.CORS_ORIGINS.split(","),
     ],
     allow_credentials=True,
