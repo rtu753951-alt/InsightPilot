@@ -247,9 +247,10 @@ export default function CustomersPage() {
                         setSuggestionLoading(false);
                       }
                     }}
-                    style={{ cursor: "pointer" }}
+                    style={{ cursor: "pointer", opacity: suggestionLoading ? 0.5 : 1 }}
+                    disabled={suggestionLoading}
                   >
-                    🤖 建議
+                    {suggestionLoading ? "⏳" : "🤖 建議"}
                   </button>
                 </td>
               </tr>

@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { login, register, me, logout } from "./services/authApi";
+
 import CustomersPage from "./pages/Customers";
 
 export default function App() {
