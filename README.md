@@ -9,10 +9,10 @@ It supports CSV import, customer behavior analysis, risk classification, and AI-
 ## 🚀 Live Demo
 
 Frontend (Vercel):  
-👉 https://你的-vercel-網址
+👉 https://insight-pilot-omega.vercel.app/
 
 Backend API (Render):  
-👉 https://你的-render-網址/docs
+👉 https://insightpilot-kqns.onrender.com/docs
 
 > You can try the system using the built-in sample CSV download button.
 
