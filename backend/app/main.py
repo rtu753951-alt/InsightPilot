@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.config import settings
 
 from app.core.db import Base, engine
 from app.routers.auth import router as auth_router
@@ -18,10 +19,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "http://localhost:4173",
-        "http://127.0.0.1:4173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
+        # 讀取環境變數中的額外 Origins (適合部署用)
+        *settings.CORS_ORIGINS.split(","),
     ],
     allow_credentials=True,
     allow_methods=["*"],
