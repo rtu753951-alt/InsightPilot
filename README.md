@@ -1,57 +1,88 @@
-# InsightPilot
+# InsightPilot – AI Customer Follow-up Recommendation System
 
-AI-powered Customer Follow-up Recommendation System
-
-## Overview
-
-InsightPilot is a full-stack web application that helps businesses identify customer churn risk and automatically generate personalized follow-up strategies using AI.
+InsightPilot is a full-stack AI-powered web application that helps businesses identify customer churn risk and automatically generate personalized follow-up strategies for sales and CRM teams.
 
 It supports CSV import, customer behavior analysis, risk classification, and AI-generated communication scripts (LINE / SMS / Call).
 
-## Tech Stack
+---
 
-Frontend:
+## 🚀 Live Demo
+
+Frontend (Vercel):  
+👉 https://你的-vercel-網址
+
+Backend API (Render):  
+👉 https://你的-render-網址/docs
+
+> You can try the system using the built-in sample CSV download button.
+
+---
+
+## ✨ Features
+
+- CSV customer data import & preview
+- Automatic customer metrics calculation (days since last visit, visit count, total spent)
+- Rule-based churn & risk classification (LOW / MEDIUM / HIGH)
+- AI-generated follow-up strategies and scripts
+  - LINE
+  - SMS
+  - Phone call
+- Modal-based AI suggestion UI
+- Pagination & filtering
+- JWT authentication (login system)
+- RESTful API design
+- Frontend & backend separated architecture
+
+---
+
+## 🧱 Tech Stack
+
+### Frontend
 - React
-- Vite
 - TypeScript
+- Vite
 
-Backend:
+### Backend
 - FastAPI
 - Python
+- SQLAlchemy
+- JWT Authentication
 
-Database:
-- SQLite (local)
+### Database
+- SQLite (development)
 - Planned: PostgreSQL (Supabase)
 
-AI:
-- Rule-based + LLM-ready architecture (OpenAI / LangChain compatible)
+### AI
+- LLM API integration
+- Prompt engineering
+- LangChain-ready architecture
 
-Deployment (planned):
+### Deployment
 - Frontend: Vercel
 - Backend: Render
+- Monorepo: GitHub
 
-## Features
+---
 
-- CSV customer data import
-- Customer metrics dashboard
-- Risk level classification
-- AI-generated follow-up suggestions
-- Multi-channel scripts (LINE / SMS / Call)
-- Pagination and filtering
-- RESTful API
-
-## Architecture
+## 🏗 Architecture
 
 frontend/ # React UI
-backend/ # FastAPI server
-docs/ # documentation
+backend/ # FastAPI API server
+docs/ # Documentation
 
 
-## Demo
+---
 
-(Coming soon)
+## 💼 Use Cases
 
-## Author
+- CRM teams identify inactive or high-risk customers
+- Sales teams receive AI-generated reactivation strategies
+- Reduce manual script writing and improve conversion rates
+- Small businesses without complex CRM systems
 
-Author: Meng-Ju (GitHub: rtu753951-alt)
+---
+
+## 👤 Author
+
+GitHub: rtu753951-alt
 
