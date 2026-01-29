@@ -1,10 +1,12 @@
 import csv
 import io
+import os
 from datetime import date
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, delete
 
 from app.core.db import get_db
 from app.models.customer import Customer
@@ -63,6 +65,7 @@ async def import_customers_csv(
 
         customer_id = (row.get("customer_id") or "").strip()
         if not customer_id:
+            db.rollback() 
             raise HTTPException(status_code=422, detail=f"Row {total_rows}: customer_id is empty")
 
         last_visit_date = _to_date((row.get("last_visit_date") or "").strip(), "last_visit_date")
@@ -130,7 +133,7 @@ def list_customers(
     for c in rows:
         days_since = (today - c.last_visit_date).days
         
-        # ✅ 新增：算風險 (Moved logic to helper function)
+        # ✅ 新增：算風險
         risk_level, risk_reason = _churn_rule(c.membership_type, days_since)
 
         result.append(
@@ -142,7 +145,6 @@ def list_customers(
                 visit_count=c.visit_count,
                 membership_type=c.membership_type,
                 days_since_last_visit=days_since,
-                # ✅ 新增：回傳風險欄位
                 risk_level=risk_level,
                 risk_reason=risk_reason,
             )
@@ -160,9 +162,7 @@ def followup_suggestion(customer_id: int, db: Session = Depends(get_db)):
     today = date.today()
     days_since = (today - c.last_visit_date).days
 
-    # 你已經有 churn_rule 的話就用你那個；沒有就先用簡單版
-    # 這裡假設你已經在 list 裡有 churn_rule，可把它搬成共用函式
-    risk_level, risk_reason = _churn_rule(c.membership_type, days_since)  # 若你這行報錯，往下看我給你的替代方案
+    risk_level, risk_reason = _churn_rule(c.membership_type, days_since)
 
     payload = {
         "customer_id": c.id,
@@ -177,3 +177,47 @@ def followup_suggestion(customer_id: int, db: Session = Depends(get_db)):
 
     return generate_followup_suggestion(payload)
 
+@router.post("/load_demo_data")
+def load_demo_data(db: Session = Depends(get_db)):
+    """
+    1. 清空 customers 表
+    2. 讀取 backend/data/demo_customers.csv
+    3. 批次匯入
+    """
+    
+    # 1. 確保 CSV 存在 (使用絕對路徑)
+    base_dir = Path(__file__).resolve().parent.parent.parent
+    csv_path = base_dir / "data" / "demo_customers.csv"
+    
+    if not csv_path.exists():
+        # Fallback for some structures
+        csv_path = base_dir / "backend" / "data" / "demo_customers.csv"
+
+    if not csv_path.exists():
+        raise HTTPException(status_code=404, detail=f"Demo CSV not found at {csv_path}")
+
+    # 2. 清空資料表
+    db.query(Customer).delete()
+    
+    # 3. 讀取並匯入
+    inserted = 0
+    # encoding="utf-8-sig" 處理 Excel 存檔可能帶有的 BOM
+    with open(csv_path, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+             # handle empty rows or bad data if necessary
+            if not row.get("customer_id"):
+                continue
+                
+            c = Customer(
+                customer_code=row["customer_id"],
+                last_visit_date=date.fromisoformat(row["last_visit_date"]),
+                total_spent=int(row["total_spent"]),
+                visit_count=int(row["visit_count"]),
+                membership_type=row["membership_type"],
+            )
+            db.add(c)
+            inserted += 1
+            
+    db.commit()
+    return {"ok": True, "rows": inserted}

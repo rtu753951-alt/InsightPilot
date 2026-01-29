@@ -70,3 +70,9 @@ export function getFollowupSuggestion(customerId: number) {
     method: "POST",
   });
 }
+
+export function loadDemoData() {
+  return apiFetch<{ ok: boolean; rows: number }>("/api/customers/load_demo_data", {
+    method: "POST",
+  });
+}

@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { getFollowupSuggestion, importCustomersCSV, listCustomers, type CustomerOut } from "../services/customersApi";
+import { useMemo, useState, useEffect, useRef } from "react";
+import { getFollowupSuggestion, importCustomersCSV, listCustomers, loadDemoData, type CustomerOut } from "../services/customersApi";
 
 function formatMoney(n: number) {
   return n.toLocaleString();
@@ -58,7 +58,16 @@ export default function CustomersPage() {
   const [loading, setLoading] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [suggestion, setSuggestion] = useState<any | null>(null);
-  const [suggestionLoading, setSuggestionLoading] = useState(false);
+  const [suggestionStatus, setSuggestionStatus] = useState<Record<string, "loading" | "done">>({});
+
+  useEffect(() => {
+    console.log("CustomersPage MOUNTED");
+    return () => console.log("CustomersPage UNMOUNTED");
+  }, []);
+
+  const lastDoneTimeRef = useRef<Record<string, number>>({});
+
+  console.log("Render CustomersPage. suggestionStatus:", suggestionStatus);
 
 
   const [limit, setLimit] = useState(100);
@@ -119,6 +128,14 @@ export default function CustomersPage() {
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
+      <style>{`
+        button, a, input[type="button"], input[type="submit"] {
+          cursor: pointer;
+        }
+        button:disabled {
+          cursor: not-allowed;
+        }
+      `}</style>
       <h1 style={{ marginBottom: 8 }}>Customers</h1>
 
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
@@ -129,6 +146,31 @@ export default function CustomersPage() {
         />
         <button onClick={onImport} disabled={loading}>
           Import CSV
+        </button>
+
+        <a href="/demo_customers.csv" download style={{ textDecoration: "none" }}>
+          <button type="button">下載範例 CSV</button>
+        </a>
+
+        <button
+          onClick={async () => {
+            if (!confirm("確定要清除現有資料並載入範例資料嗎？")) return;
+            setLoading(true);
+            setStatus("Loading demo data...");
+            try {
+              const res = await loadDemoData();
+              setStatus(`✅ 已載入範例資料，共 ${res.rows} 筆`);
+              setOffset(0);
+              await refresh({ offset: 0 });
+            } catch (e) {
+              setStatus(`❌ ${String(e)}`);
+            } finally {
+              setLoading(false);
+            }
+          }}
+          disabled={loading}
+        >
+          🚀 載入範例資料
         </button>
 
         <button onClick={() => refresh()} disabled={loading}>
@@ -236,21 +278,62 @@ export default function CustomersPage() {
                 <td style={{ maxWidth: 360, color: "#6b7280" }}>{c.risk_reason}</td>
                 <td>
                   <button
+                    type="button"
                     onClick={async () => {
-                      setSuggestionLoading(true);
+                      const idStr = String(c.id);
+                      const current = suggestionStatus[idStr] || "idle";
+
+                      if (current === "done") {
+                        // Debounce reset: ignore if done within last 2 seconds
+                        const lastDone = lastDoneTimeRef.current[idStr] || 0;
+                        if (Date.now() - lastDone < 2000) {
+                           console.log("Ignoring click (debounce) for:", idStr);
+                           return;
+                        }
+
+                        // Reset to idle
+                        console.log("Resetting to idle:", idStr);
+                        setSuggestionStatus((prev) => {
+                          const next = { ...prev };
+                          delete next[idStr];
+                          return next;
+                        });
+                        return;
+                      }
+
+                      if (current === "loading") return;
+
+                      // Start loading
+                      setSuggestionStatus((prev) => ({ ...prev, [idStr]: "loading" }));
+                      
                       try {
                         const data = await getFollowupSuggestion(c.id);
+                        console.log("API Success for ID:", idStr, data);
                         setSuggestion(data);
+                        // Mark as done
+                        setSuggestionStatus((prev) => {
+                           console.log("Updating status to DONE for:", idStr);
+                           lastDoneTimeRef.current[idStr] = Date.now(); // Update timestamp
+                           return { ...prev, [idStr]: "done" };
+                        });
                       } catch (e) {
+                        console.error("Error loading suggestion:", e);
                         alert(String(e));
-                      } finally {
-                        setSuggestionLoading(false);
+                        // Error -> reset to idle
+                        setSuggestionStatus((prev) => {
+                          const next = { ...prev };
+                          delete next[idStr];
+                          return next;
+                        });
                       }
                     }}
-                    style={{ cursor: "pointer", opacity: suggestionLoading ? 0.5 : 1 }}
-                    disabled={suggestionLoading}
+                    style={{ 
+                      cursor: "pointer", 
+                      minWidth: 80 
+                    }}
+                    disabled={suggestionStatus[String(c.id)] === "loading"}
                   >
-                    {suggestionLoading ? "⏳" : "🤖 建議"}
+                    {suggestionStatus[String(c.id)] === "loading" || suggestionStatus[String(c.id)] === "done" ? "✅ 已產生" : "🤖 建議"}
                   </button>
                 </td>
               </tr>
