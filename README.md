@@ -38,26 +38,31 @@ Backend API (Render):
 ## 🧱 Tech Stack
 
 ### Frontend
+
 - React
 - TypeScript
 - Vite
 
 ### Backend
+
 - FastAPI
 - Python
 - SQLAlchemy
 - JWT Authentication
 
 ### Database
+
 - SQLite (development)
 - Planned: PostgreSQL (Supabase)
 
 ### AI
+
 - LLM API integration
 - Prompt engineering
 - LangChain-ready architecture
 
 ### Deployment
+
 - Frontend: Vercel
 - Backend: Render
 - Monorepo: GitHub
@@ -69,7 +74,6 @@ Backend API (Render):
 frontend/ # React UI
 backend/ # FastAPI API server
 docs/ # Documentation
-
 
 ---
 
@@ -86,3 +90,35 @@ docs/ # Documentation
 
 GitHub: rtu753951-alt
 
+---
+
+## 🛠 Backend Setup & Commercial Import
+
+### 1. Database Initialization
+
+Ensure your `.env` has the correct `DATABASE_URL` (Supabase/Postgres).
+Run the initialization script to create the `imports` tracking table and ensure `UNIQUE` constraints on `customer_code`:
+
+```bash
+cd backend
+python scripts/init_db.py
+```
+
+### 2. Testing Import API (curl)
+
+You can test the commercial CSV import (Upsert) directly:
+
+```bash
+curl -X POST "http://localhost:8000/api/customers/import" \
+  -H "accept: application/json" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@data/demo_customers.csv"
+```
+
+### 3. Check Import History
+
+View the status of recent imports:
+
+```bash
+curl -X GET "http://localhost:8000/api/customers/imports?limit=5"
+```

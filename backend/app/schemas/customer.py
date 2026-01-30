@@ -20,6 +20,7 @@ class CustomerOut(BaseModel):
     risk_reason: str
 
 class ImportResult(BaseModel):
+    import_id: str
     inserted: int
     updated: int
     total_rows: int

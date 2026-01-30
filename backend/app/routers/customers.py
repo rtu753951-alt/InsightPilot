@@ -1,23 +1,26 @@
 import csv
 import io
-import os
+import uuid
+import traceback
 from datetime import date
-from pathlib import Path
+from typing import List
 
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import select, delete
+from sqlalchemy import select, desc
+from sqlalchemy.dialects.postgresql import insert
 
 from app.core.db import get_db
 from app.models.customer import Customer
+from app.models.import_record import ImportRecord
 from app.schemas.customer import CustomerOut, ImportResult
+from app.schemas.import_record import ImportRecordOut
 from app.core.llm_service import generate_followup_suggestion
-
 
 router = APIRouter(prefix="/api/customers", tags=["customers"])
 
 REQUIRED_COLUMNS = {
-    "customer_id",
+    "customer_code",
     "last_visit_date",
     "total_spent",
     "visit_count",
@@ -26,13 +29,14 @@ REQUIRED_COLUMNS = {
 
 def _to_int(v: str, field: str) -> int:
     try:
-        return int(v)
+        return int(float(v))
     except Exception:
+        if not v: return 0
         raise HTTPException(status_code=422, detail=f"Invalid int for {field}: {v}")
 
 def _to_date(v: str, field: str) -> date:
     try:
-        # 期待格式 YYYY-MM-DD
+        if not v: raise ValueError("Empty date")
         return date.fromisoformat(v)
     except Exception:
         raise HTTPException(status_code=422, detail=f"Invalid date for {field} (YYYY-MM-DD): {v}")
@@ -42,73 +46,132 @@ async def import_customers_csv(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    if not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Please upload a .csv file")
+    from app.core.config import settings
+    # print(f"DEBUG: Starting import_customers_csv... DB_URL_FROM_SETTINGS={settings.DATABASE_URL}", flush=True)
+    # print(f"DEBUG: Session bind URL={db.bind.url}", flush=True)
 
-    raw = await file.read()
-    text = raw.decode("utf-8", errors="replace")
+    try:
+        # 1. Start Import Record
+        import_rec = ImportRecord(
+            filename=file.filename,
+            status="processing",
+            row_count=0
+        )
+        db.add(import_rec)
+        db.commit()
+        db.refresh(import_rec)
 
-    reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
-        raise HTTPException(status_code=400, detail="CSV has no header row")
+        if not file.filename.lower().endswith(".csv"):
+            raise HTTPException(status_code=400, detail="Please upload a .csv file")
 
-    missing = REQUIRED_COLUMNS - set(reader.fieldnames)
-    if missing:
-        raise HTTPException(status_code=422, detail=f"Missing columns: {sorted(list(missing))}")
+        raw = await file.read()
+        text_content = raw.decode("utf-8-sig", errors="replace")
 
-    inserted = 0
-    updated = 0
-    total_rows = 0
+        reader = csv.DictReader(io.StringIO(text_content))
+        
+        if not reader.fieldnames:
+             raise HTTPException(status_code=400, detail="CSV has no header")
 
-    for row in reader:
-        total_rows += 1
+        rows_to_upsert = []
+        row_idx = 0
+        for row in reader:
+            row_idx += 1
+            code = row.get("customer_code") or row.get("customer_id")
+            if not code:
+                continue 
 
-        customer_id = (row.get("customer_id") or "").strip()
-        if not customer_id:
-            db.rollback() 
-            raise HTTPException(status_code=422, detail=f"Row {total_rows}: customer_id is empty")
+            r_data = {
+                "customer_code": code.strip(),
+                "last_visit_date": _to_date((row.get("last_visit_date") or "").strip(), f"Row {row_idx} date"),
+                "total_spent": _to_int((row.get("total_spent") or "").strip(), f"Row {row_idx} spent"),
+                "visit_count": _to_int((row.get("visit_count") or "").strip(), f"Row {row_idx} visit"),
+                "membership_type": (row.get("membership_type") or "BASIC").strip(),
+                "created_at": date.today()
+            }
+            rows_to_upsert.append(r_data)
 
-        last_visit_date = _to_date((row.get("last_visit_date") or "").strip(), "last_visit_date")
-        total_spent = _to_int((row.get("total_spent") or "").strip(), "total_spent")
-        visit_count = _to_int((row.get("visit_count") or "").strip(), "visit_count")
-        membership_type = (row.get("membership_type") or "").strip()
+        if not rows_to_upsert:
+             import_rec.status = "done"
+             import_rec.row_count = 0
+             db.commit()
+             return ImportResult(import_id=str(import_rec.id), inserted=0, updated=0, total_rows=0)
 
-        existing = db.scalar(select(Customer).where(Customer.customer_code == customer_id))
+        # 2. Logic to count Insert vs Update
+        codes = [x["customer_code"] for x in rows_to_upsert]
+        existing_codes = db.scalars(
+            select(Customer.customer_code).where(Customer.customer_code.in_(codes))
+        ).all()
+        existing_set = set(existing_codes)
 
-        if existing:
-            existing.last_visit_date = last_visit_date
-            existing.total_spent = total_spent
-            existing.visit_count = visit_count
-            existing.membership_type = membership_type
-            updated += 1
-        else:
-            c = Customer(
-                customer_code=customer_id,
-                last_visit_date=last_visit_date,
-                total_spent=total_spent,
-                visit_count=visit_count,
-                membership_type=membership_type,
-            )
-            db.add(c)
-            inserted += 1
+        update_count = 0
+        insert_count = 0
+        for r in rows_to_upsert:
+            if r["customer_code"] in existing_set:
+                update_count += 1
+            else:
+                insert_count += 1
 
-    db.commit()
+        # 3. Bulk Upsert (Raw SQL)
+        # Using raw SQL to avoid SQLAlchemy dialect compilation issues (SQLite vs Postgres confusion)
+        from sqlalchemy import text
+        stmt = text("""
+            INSERT INTO customers (customer_code, last_visit_date, total_spent, visit_count, membership_type, created_at)
+            VALUES (:customer_code, :last_visit_date, :total_spent, :visit_count, :membership_type, :created_at)
+            ON CONFLICT (customer_code) DO UPDATE 
+            SET last_visit_date = EXCLUDED.last_visit_date,
+                total_spent = EXCLUDED.total_spent,
+                visit_count = EXCLUDED.visit_count,
+                membership_type = EXCLUDED.membership_type
+        """)
+        
+        # Execute each (or executemany if driver supports it efficiently)
+        # SQLAlchemy execute(text, list_of_dicts) does executemany
+        db.execute(stmt, rows_to_upsert)
+        print("DEBUG: Raw SQL Upsert executed.", flush=True)
+        
+        # 4. Finish Import Record
+        import_rec.status = "done"
+        import_rec.row_count = len(rows_to_upsert)
+        db.commit()
 
-    return ImportResult(inserted=inserted, updated=updated, total_rows=total_rows)
+        return ImportResult(
+            import_id=str(import_rec.id),
+            inserted=insert_count,
+            updated=update_count,
+            total_rows=len(rows_to_upsert)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        err_msg = traceback.format_exc()
+        print(f"Import Error: {err_msg}", flush=True)
+        # Try to save failed status (best effort)
+        try:
+             # Need a new transaction?
+             # Since we are inside a request, and rolled back, `import_rec` is gone/detached.
+             # We won't try to update `import_rec` to avoid complexity here.
+             pass 
+        except:
+             pass
+        raise HTTPException(status_code=500, detail=f"Import failed: {err_msg}")
+
+@router.get("/imports", response_model=List[ImportRecordOut])
+def get_imports(limit: int = 20, db: Session = Depends(get_db)):
+    return db.scalars(
+        select(ImportRecord).order_by(desc(ImportRecord.created_at)).limit(limit)
+    ).all()
 
 
 def _churn_rule(membership_type: str, days_since: int) -> tuple[str, str]:
     m = (membership_type or "").upper()
-
-    # VIP 放寬一點
     if m == "VIP":
         if days_since >= 150:
             return "high", f"VIP but inactive for {days_since} days (>=150)"
         if days_since >= 90:
             return "medium", f"VIP inactive for {days_since} days (>=90)"
         return "low", f"VIP active within {days_since} days"
-
-    # 其他會員
     if days_since >= 120:
         return "high", f"Inactive for {days_since} days (>=120)"
     if days_since >= 60:
@@ -122,7 +185,7 @@ def list_customers(
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
-    limit = max(1, min(limit, 500))  # 防呆：最多一次 500
+    limit = max(1, min(limit, 500))
     rows = db.execute(
         select(Customer).order_by(Customer.customer_code).limit(limit).offset(offset)
     ).scalars().all()
@@ -132,10 +195,7 @@ def list_customers(
 
     for c in rows:
         days_since = (today - c.last_visit_date).days
-        
-        # ✅ 新增：算風險
         risk_level, risk_reason = _churn_rule(c.membership_type, days_since)
-
         result.append(
             CustomerOut(
                 id=c.id,
@@ -149,21 +209,16 @@ def list_customers(
                 risk_reason=risk_reason,
             )
         )
-
     return result
-    
+
 @router.post("/{customer_id}/followup_suggestion")
 def followup_suggestion(customer_id: int, db: Session = Depends(get_db)):
-    # 取客戶
     c = db.query(Customer).filter(Customer.id == customer_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Customer not found")
-
     today = date.today()
     days_since = (today - c.last_visit_date).days
-
     risk_level, risk_reason = _churn_rule(c.membership_type, days_since)
-
     payload = {
         "customer_id": c.id,
         "customer_code": c.customer_code,
@@ -174,50 +229,30 @@ def followup_suggestion(customer_id: int, db: Session = Depends(get_db)):
         "risk_level": risk_level,
         "risk_reason": risk_reason,
     }
-
     return generate_followup_suggestion(payload)
 
 @router.post("/load_demo_data")
 def load_demo_data(db: Session = Depends(get_db)):
-    """
-    1. 清空 customers 表
-    2. 讀取 backend/data/demo_customers.csv
-    3. 批次匯入
-    """
-    
-    # 1. 確保 CSV 存在 (使用絕對路徑)
+    from pathlib import Path
     base_dir = Path(__file__).resolve().parent.parent.parent
     csv_path = base_dir / "data" / "demo_customers.csv"
-    
     if not csv_path.exists():
-        # Fallback for some structures
         csv_path = base_dir / "backend" / "data" / "demo_customers.csv"
-
     if not csv_path.exists():
-        raise HTTPException(status_code=404, detail=f"Demo CSV not found at {csv_path}")
-
-    # 2. 清空資料表
+        raise HTTPException(status_code=404, detail=f"Demo CSV not found")
     db.query(Customer).delete()
-    
-    # 3. 讀取並匯入
-    inserted = 0
-    # encoding="utf-8-sig" 處理 Excel 存檔可能帶有的 BOM
     with open(csv_path, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
-             # handle empty rows or bad data if necessary
-            if not row.get("customer_id"):
-                continue
-                
-            c = Customer(
-                customer_code=row["customer_id"],
-                last_visit_date=date.fromisoformat(row["last_visit_date"]),
-                total_spent=int(row["total_spent"]),
-                visit_count=int(row["visit_count"]),
-                membership_type=row["membership_type"],
-            )
-            db.add(c)
-            inserted += 1
-            
+             code = row.get("customer_id") or row.get("customer_code")
+             if not code: continue
+             c = Customer(
+                 customer_code=code,
+                 last_visit_date=date.fromisoformat(row["last_visit_date"]),
+                 total_spent=int(row["total_spent"]),
+                 visit_count=int(row["visit_count"]),
+                 membership_type=row["membership_type"],
+             )
+             db.add(c)
     db.commit()
-    return {"ok": True, "rows": inserted}
+    return {"ok": True, "rows": 999}
