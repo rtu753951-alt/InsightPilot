@@ -41,7 +41,7 @@ def _mock_suggestion(
         ),
         "sms": (
             f"{customer_code}您好：提醒您已 {days_since_last_visit} 天未回訪，"
-            f"本週有 {offer}，回覆1我協助安排。"
+            f"本週有 {offer}，回覆1後讓我們為您安排。"
         ),
         "call": (
             f"您好，我是XX這邊致電關心。看到您已 {days_since_last_visit} 天未回訪，"

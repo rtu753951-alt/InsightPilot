@@ -48,13 +48,17 @@ export async function importCustomersCSV(file: File): Promise<ImportResult> {
 export function listCustomers(params?: {
   limit?: number;
   offset?: number;
-}): Promise<CustomerOut[]> {
+  membership_type?: string;
+  risk_level?: string;
+}): Promise<{ items: CustomerOut[], total: number }> {
   const qs = new URLSearchParams();
   if (params?.limit != null) qs.set("limit", String(params.limit));
   if (params?.offset != null) qs.set("offset", String(params.offset));
+  if (params?.membership_type && params.membership_type !== "all") qs.set("membership_type", params.membership_type);
+  if (params?.risk_level && params.risk_level !== "all") qs.set("risk_level", params.risk_level);
 
   const path = `/api/customers${qs.toString() ? `?${qs.toString()}` : ""}`;
-  return apiFetch<CustomerOut[]>(path);
+  return apiFetch<{ items: CustomerOut[], total: number }>(path);
 }
 
 function safeJsonParse(text: string) {

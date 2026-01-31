@@ -1,3 +1,4 @@
+from typing import List
 from datetime import date
 from pydantic import BaseModel
 
@@ -18,6 +19,10 @@ class CustomerOut(BaseModel):
     days_since_last_visit: int
     risk_level: str
     risk_reason: str
+
+class CustomerList(BaseModel):
+    items: List[CustomerOut]
+    total: int
 
 class ImportResult(BaseModel):
     import_id: str

@@ -7,13 +7,13 @@ from typing import List
 
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func, or_, and_, not_
 from sqlalchemy.dialects.postgresql import insert
 
 from app.core.db import get_db
 from app.models.customer import Customer
 from app.models.import_record import ImportRecord
-from app.schemas.customer import CustomerOut, ImportResult
+from app.schemas.customer import CustomerOut, ImportResult, CustomerList
 from app.schemas.import_record import ImportRecordOut
 from app.core.llm_service import generate_followup_suggestion
 
@@ -168,35 +168,107 @@ def _churn_rule(membership_type: str, days_since: int) -> tuple[str, str]:
     m = (membership_type or "").upper()
     if m == "VIP":
         if days_since >= 150:
-            return "high", f"VIP but inactive for {days_since} days (>=150)"
+            return "high", f"VIP 已停滯 {days_since} 天 (>=150)"
         if days_since >= 90:
-            return "medium", f"VIP inactive for {days_since} days (>=90)"
-        return "low", f"VIP active within {days_since} days"
+            return "medium", f"VIP 已停滯 {days_since} 天 (>=90)"
+        return "low", f"VIP 近期活躍 ({days_since} 天前)"
     if days_since >= 120:
-        return "high", f"Inactive for {days_since} days (>=120)"
+        return "high", f"已停滯 {days_since} 天 (>=120)"
     if days_since >= 60:
-        return "medium", f"Inactive for {days_since} days (>=60)"
-    return "low", f"Active within {days_since} days"
+        return "medium", f"已停滯 {days_since} 天 (>=60)"
+    return "low", f"近期活躍 ({days_since} 天前)"
 
 
-@router.get("", response_model=list[CustomerOut])
+@router.get("", response_model=CustomerList)
 def list_customers(
     limit: int = 100,
     offset: int = 0,
+    membership_type: str | None = None,
+    risk_level: str | None = None,
     db: Session = Depends(get_db),
 ):
     limit = max(1, min(limit, 500))
+    
+    query = select(Customer)
+    
+    # 1. Apply Membership Filter
+    if membership_type and membership_type != "all":
+        # Fuzzy match or exact? Assuming exact from UI but let's be safe
+        query = query.where(Customer.membership_type == membership_type)
+
+    # 2. Apply Risk Filter (Logic -> Date)
+    if risk_level and risk_level != "all":
+        from datetime import timedelta
+        today = date.today()
+        # Risk thresholds
+        # VIP: High(>=150), Med(90-149), Low(<90)
+        # Normal: High(>=120), Med(60-119), Low(<60)
+        
+        # We need OR logic: (VIP AND High_Cond) OR (NOT VIP AND High_Cond)
+        from sqlalchemy import or_, and_, not_
+
+        is_vip = (func.upper(Customer.membership_type) == "VIP")
+        
+        if risk_level == "high":
+            # VIP >= 150  OR  Not VIP >= 120
+            # date <= today - 150
+            d_vip = today - timedelta(days=150)
+            d_norm = today - timedelta(days=120)
+            
+            query = query.where(
+                or_(
+                    and_(is_vip, Customer.last_visit_date <= d_vip),
+                    and_(not_(is_vip), Customer.last_visit_date <= d_norm)
+                )
+            )
+        elif risk_level == "medium":
+            # VIP: 90 <= days < 150  -->  today-149 <= date <= today-90
+            d_vip_start = today - timedelta(days=90)
+            d_vip_end = today - timedelta(days=149) # actually date >= today-149 implies days <= 149
+            
+            # Normal: 60 <= days < 120
+            d_norm_start = today - timedelta(days=60)
+            d_norm_end = today - timedelta(days=119)
+            
+            query = query.where(
+                or_(
+                    and_(is_vip, Customer.last_visit_date <= d_vip_start, Customer.last_visit_date >= d_vip_end),
+                    and_(not_(is_vip), Customer.last_visit_date <= d_norm_start, Customer.last_visit_date >= d_norm_end)
+                )
+            )
+        elif risk_level == "low":
+             # VIP < 90 --> date > today-90
+             d_vip = today - timedelta(days=90)
+             d_norm = today - timedelta(days=60)
+             
+             query = query.where(
+                or_(
+                    and_(is_vip, Customer.last_visit_date > d_vip),
+                    and_(not_(is_vip), Customer.last_visit_date > d_norm)
+                )
+             )
+
+
+    # 3. Get Total (with filters)
+    # We must compile the query for count separately or use distinct technique
+    # count_query = select(func.count()).select_from(query.subquery()) # generic way
+    # Or simpler:
+    count_query = select(func.count(Customer.id)).where(query.whereclause) if query.whereclause is not None else select(func.count(Customer.id))
+    
+    total = db.scalar(count_query) or 0
+
+    # 4. Get Rows (Apply sorting and pagination)
     rows = db.execute(
-        select(Customer).order_by(Customer.customer_code).limit(limit).offset(offset)
+        query.order_by(Customer.customer_code).limit(limit).offset(offset)
     ).scalars().all()
 
     today = date.today()
-    result: list[CustomerOut] = []
+    items: list[CustomerOut] = []
 
     for c in rows:
         days_since = (today - c.last_visit_date).days
-        risk_level, risk_reason = _churn_rule(c.membership_type, days_since)
-        result.append(
+        risk_level_calc, risk_reason = _churn_rule(c.membership_type, days_since)
+        items.append(
             CustomerOut(
                 id=c.id,
                 customer_code=c.customer_code,
@@ -205,11 +277,11 @@ def list_customers(
                 visit_count=c.visit_count,
                 membership_type=c.membership_type,
                 days_since_last_visit=days_since,
-                risk_level=risk_level,
+                risk_level=risk_level_calc,
                 risk_reason=risk_reason,
             )
         )
-    return result
+    return CustomerList(items=items, total=total)
 
 @router.post("/{customer_id}/followup_suggestion")
 def followup_suggestion(customer_id: int, db: Session = Depends(get_db)):
