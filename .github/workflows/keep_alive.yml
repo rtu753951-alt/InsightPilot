@@ -1,0 +1,16 @@
+name: Wake Up Render Backend
+
+on:
+  schedule:
+    # 每 14 分鐘執行一次 (Render 免費版約 15 分鐘休眠，設 14 分鐘比較保險)
+    - cron: "*/14 * * * *"
+  # 允許手動從 GitHub Actions 介面觸發
+  workflow_dispatch:
+
+jobs:
+  ping-url:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Backend URL
+        run: |
+          curl -I https://insightpilot-kqns.onrender.com/
