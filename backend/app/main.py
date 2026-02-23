@@ -40,3 +40,11 @@ def health():
 # ✅ 掛上登入相關 API
 app.include_router(auth_router)
 app.include_router(customers_router)
+
+if __name__ == "__main__":
+    import os
+    import uvicorn
+    # 優先讀取 Render 提供的 PORT，否則預設為 10000
+    port = int(os.environ.get("PORT", 10000))
+    # 必須綁定在 0.0.0.0 才能讓外部（例如 Render 的 Load Balancer）連線
+    uvicorn.run(app, host="0.0.0.0", port=port)
